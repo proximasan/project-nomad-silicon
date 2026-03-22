@@ -19,14 +19,34 @@ export class DockerService {
   private activeInstallations: Set<string> = new Set()
   public static NOMAD_NETWORK = 'project-nomad_default'
 
+  /**
+   * Check if Ollama is configured to run natively on the host (not in Docker).
+   * This is the recommended setup on macOS for Metal/MPS GPU acceleration.
+   * When OLLAMA_HOST is set (typically to http://host.docker.internal:11434),
+   * NOMAD communicates with the native Ollama over HTTP instead of managing a Docker container.
+   */
+  static isNativeOllama(): boolean {
+    const ollamaHost = process.env.OLLAMA_HOST || ''
+    return ollamaHost.length > 0
+  }
+
+  /**
+   * Get the URL for the native Ollama instance.
+   * Returns null if native Ollama is not configured.
+   */
+  static getNativeOllamaURL(): string | null {
+    const ollamaHost = process.env.OLLAMA_HOST || ''
+    return ollamaHost.length > 0 ? ollamaHost : null
+  }
+
   constructor() {
-    // Support both Linux (production) and Windows (development with Docker Desktop)
+    // Support Linux (production), macOS (Docker Desktop), and Windows (Docker Desktop)
     const isWindows = process.platform === 'win32'
     if (isWindows) {
       // Windows Docker Desktop uses named pipe
       this.docker = new Docker({ socketPath: '//./pipe/docker_engine' })
     } else {
-      // Linux uses Unix socket
+      // Linux and macOS use Unix socket (Docker Desktop on macOS exposes the same socket)
       this.docker = new Docker({ socketPath: '/var/run/docker.sock' })
     }
   }
@@ -36,6 +56,14 @@ export class DockerService {
     action: 'start' | 'stop' | 'restart'
   ): Promise<{ success: boolean; message: string }> {
     try {
+      // Native Ollama is managed outside Docker — container operations don't apply
+      if (serviceName === SERVICE_NAMES.OLLAMA && DockerService.isNativeOllama()) {
+        return {
+          success: true,
+          message: `Ollama is running natively on the host (not in Docker). Use the native Ollama application to ${action} it.`,
+        }
+      }
+
       const service = await Service.query().where('service_name', serviceName).first()
       if (!service || !service.installed) {
         return {
@@ -119,10 +147,35 @@ export class DockerService {
         }
       })
 
-      return Array.from(containerMap.entries()).map(([name, container]) => ({
+      const statuses = Array.from(containerMap.entries()).map(([name, container]) => ({
         service_name: name,
         status: container.State,
       }))
+
+      // For native Ollama, check health via HTTP instead of Docker container status
+      if (DockerService.isNativeOllama()) {
+        const hasOllamaContainer = statuses.some((s) => s.service_name === SERVICE_NAMES.OLLAMA)
+        if (!hasOllamaContainer) {
+          try {
+            const nativeUrl = DockerService.getNativeOllamaURL()
+            if (nativeUrl) {
+              const axios = (await import('axios')).default
+              const response = await axios.get(`${nativeUrl}/api/tags`, { timeout: 3000 })
+              statuses.push({
+                service_name: SERVICE_NAMES.OLLAMA,
+                status: response.status === 200 ? 'running' : 'exited',
+              })
+            }
+          } catch {
+            statuses.push({
+              service_name: SERVICE_NAMES.OLLAMA,
+              status: 'exited',
+            })
+          }
+        }
+      }
+
+      return statuses
     } catch (error) {
       logger.error(`Error fetching services status: ${error.message}`)
       return []
@@ -138,6 +191,15 @@ export class DockerService {
   async getServiceURL(serviceName: string): Promise<string | null> {
     if (!serviceName || serviceName.trim() === '') {
       return null
+    }
+
+    // If this is Ollama and native Ollama is configured, return the native URL directly
+    if (serviceName === SERVICE_NAMES.OLLAMA && DockerService.isNativeOllama()) {
+      const nativeUrl = DockerService.getNativeOllamaURL()
+      if (nativeUrl) {
+        logger.info(`[DockerService] Using native Ollama URL: ${nativeUrl}`)
+        return nativeUrl
+      }
     }
 
     const service = await Service.query()
@@ -454,6 +516,62 @@ export class DockerService {
       let gpuHostConfig = containerConfig?.HostConfig || {}
 
       if (service.service_name === SERVICE_NAMES.OLLAMA) {
+        // Native Ollama: skip Docker container creation entirely, just verify connectivity
+        if (DockerService.isNativeOllama()) {
+          const nativeUrl = DockerService.getNativeOllamaURL()
+          this._broadcast(
+            service.service_name,
+            'gpu-config',
+            `Native Ollama detected at ${nativeUrl}. Skipping Docker container creation. Metal/MPS GPU acceleration is available natively on macOS.`
+          )
+          logger.info(`[DockerService] Native Ollama configured at ${nativeUrl}. Skipping container creation.`)
+
+          // Verify native Ollama is reachable
+          try {
+            const axios = (await import('axios')).default
+            await axios.get(`${nativeUrl}/api/tags`, { timeout: 5000 })
+            this._broadcast(
+              service.service_name,
+              'native-ollama-ok',
+              `Native Ollama is reachable at ${nativeUrl}. Connection verified.`
+            )
+          } catch (error) {
+            this._broadcast(
+              service.service_name,
+              'native-ollama-warning',
+              `Native Ollama at ${nativeUrl} is not responding. Make sure Ollama is running on the host. The AI Assistant will attempt to connect when Ollama becomes available.`
+            )
+            logger.warn(`[DockerService] Native Ollama at ${nativeUrl} is not responding: ${error.message}`)
+          }
+
+          // Mark as installed without creating a container
+          this._broadcast(
+            service.service_name,
+            'finalizing',
+            `Finalizing native Ollama configuration...`
+          )
+          service.installed = true
+          service.installation_status = 'idle'
+          await service.save()
+          this.activeInstallations.delete(service.service_name)
+
+          // Trigger Nomad docs discovery
+          logger.info('[DockerService] Native Ollama configuration complete. Triggering Nomad docs discovery...')
+          await KVStore.setValue('chat.suggestionsEnabled', false)
+          const ollamaService = new (await import('./ollama_service.js')).OllamaService()
+          const ragService = new (await import('./rag_service.js')).RagService(this, ollamaService)
+          ragService.discoverNomadDocs().catch((err) => {
+            logger.error('[DockerService] Failed to discover Nomad docs:', err)
+          })
+
+          this._broadcast(
+            service.service_name,
+            'completed',
+            `Service ${service.service_name} (native) configuration completed successfully.`
+          )
+          return
+        }
+
         const gpuResult = await this._detectGPUType()
 
         if (gpuResult.type === 'nvidia') {
@@ -485,6 +603,13 @@ export class DockerService {
           // When re-enabling:
           //   1. Switch image to 'ollama/ollama:rocm'
           //   2. Restore _discoverAMDDevices() to map /dev/kfd and /dev/dri/* into the container
+        } else if (gpuResult.type === 'apple') {
+          this._broadcast(
+            service.service_name,
+            'gpu-config',
+            `Apple Silicon detected. Metal/MPS GPU acceleration is not available inside Docker containers. The AI Assistant will run on CPU inside Docker. For GPU-accelerated AI on macOS, set OLLAMA_HOST to use native Ollama with Metal acceleration.`
+          )
+          logger.info('[DockerService] Apple Silicon detected. Docker containers cannot access Metal/MPS. Using CPU-only configuration.')
         } else if (gpuResult.toolkitMissing) {
           this._broadcast(
             service.service_name,
@@ -682,8 +807,9 @@ export class DockerService {
    * Detect GPU type and toolkit availability.
    * Primary: Check Docker runtimes via docker.info() (works from inside containers).
    * Fallback: lspci for host-based installs and AMD detection.
+   * macOS: Detect Apple Silicon — Metal/MPS is not available inside Docker containers.
    */
-  private async _detectGPUType(): Promise<{ type: 'nvidia' | 'amd' | 'none'; toolkitMissing?: boolean }> {
+  private async _detectGPUType(): Promise<{ type: 'nvidia' | 'amd' | 'apple' | 'none'; toolkitMissing?: boolean }> {
     try {
       // Primary: Check Docker daemon for nvidia runtime (works from inside containers)
       try {
@@ -694,11 +820,31 @@ export class DockerService {
           await this._persistGPUType('nvidia')
           return { type: 'nvidia' }
         }
+
+        // Detect macOS Apple Silicon via Docker info
+        // Docker Desktop on macOS runs a Linux VM, so OSType is 'linux' and Architecture is 'aarch64'.
+        // We combine this with the host platform check (or linuxkit kernel which indicates Docker Desktop).
+        const arch = dockerInfo.Architecture || ''
+        const osType = dockerInfo.OSType || ''
+        const kernelVersion = dockerInfo.KernelVersion || ''
+        const isMacDockerDesktop = (
+          (process.platform === 'darwin' && arch === 'aarch64' && osType === 'linux') ||
+          (arch === 'aarch64' && kernelVersion.includes('linuxkit'))
+        )
+        if (isMacDockerDesktop) {
+          if (DockerService.isNativeOllama()) {
+            logger.info('[DockerService] Apple Silicon Mac detected with native Ollama configured. Metal/MPS GPU acceleration is available via native Ollama.')
+          } else {
+            logger.info('[DockerService] Apple Silicon Mac detected (ARM64 via Docker Desktop). Metal/MPS GPU acceleration is not available inside Docker containers. For GPU-accelerated AI, configure OLLAMA_HOST to use native Ollama.')
+          }
+          await this._persistGPUType('apple')
+          return { type: 'apple' }
+        }
       } catch (error) {
         logger.warn(`[DockerService] Could not query Docker info for GPU runtimes: ${error.message}`)
       }
 
-      // Fallback: lspci for host-based installs (not available inside Docker)
+      // Fallback: lspci for host-based installs (not available inside Docker or on macOS)
       const execAsync = promisify(exec)
 
       // Check for NVIDIA GPU via lspci
@@ -712,7 +858,7 @@ export class DockerService {
           return { type: 'none', toolkitMissing: true }
         }
       } catch (error) {
-        // lspci not available (likely inside Docker container), continue
+        // lspci not available (likely inside Docker container or on macOS), continue
       }
 
       // Check for AMD GPU via lspci — restrict to display controller classes to avoid
@@ -735,12 +881,34 @@ export class DockerService {
       // hiccup, runtime temporarily unavailable) but the hardware hasn't changed.
       try {
         const savedType = await KVStore.getValue('gpu.type')
-        if (savedType === 'nvidia' || savedType === 'amd') {
+        if (savedType === 'nvidia' || savedType === 'amd' || savedType === 'apple') {
           logger.info(`[DockerService] No GPU detected live, but KV store has '${savedType}' from previous detection. Using saved value.`)
-          return { type: savedType as 'nvidia' | 'amd' }
+          return { type: savedType as 'nvidia' | 'amd' | 'apple' }
         }
       } catch {
         // KV store not available, continue
+      }
+
+      // Additional macOS fallback: detect Apple Silicon even if Docker info check didn't trigger
+      if (process.platform === 'darwin') {
+        try {
+          const { stdout: archCheck } = await execAsync('uname -m')
+          if (archCheck.trim() === 'arm64') {
+            logger.info('[DockerService] Apple Silicon Mac detected via uname. Metal/MPS GPU acceleration is not available inside Docker containers.')
+            return { type: 'apple' }
+          }
+        } catch {
+          // uname failed, continue
+        }
+      }
+
+      // Check for OLLAMA_HOST with host.docker.internal (indicates macOS Docker Desktop environment)
+      if (DockerService.isNativeOllama()) {
+        const ollamaHost = process.env.OLLAMA_HOST || ''
+        if (ollamaHost.includes('host.docker.internal')) {
+          logger.info('[DockerService] OLLAMA_HOST contains host.docker.internal — likely macOS Docker Desktop. Treating as Apple Silicon.')
+          return { type: 'apple' }
+        }
       }
 
       logger.info('[DockerService] No GPU detected')
@@ -751,7 +919,7 @@ export class DockerService {
     }
   }
 
-  private async _persistGPUType(type: 'nvidia' | 'amd'): Promise<void> {
+  private async _persistGPUType(type: 'nvidia' | 'amd' | 'apple'): Promise<void> {
     try {
       await KVStore.setValue('gpu.type', type)
       logger.info(`[DockerService] Persisted GPU type '${type}' to KV store`)

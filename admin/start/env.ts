@@ -29,6 +29,18 @@ export default await Env.create(new URL('../', import.meta.url), {
 
   /*
   |----------------------------------------------------------
+  | Variables for macOS / native Ollama support
+  |----------------------------------------------------------
+  | OLLAMA_HOST: Set to use a native (non-Docker) Ollama instance.
+  |   e.g., "http://host.docker.internal:11434" for macOS Metal acceleration.
+  | APPLE_CHIP_MODEL: Injected by the macOS install script to identify the chip
+  |   (e.g., "Apple M3 Pro"). Used when si.cpu() returns empty data inside Docker.
+  */
+  OLLAMA_HOST: Env.schema.string.optional(),
+  APPLE_CHIP_MODEL: Env.schema.string.optional(),
+
+  /*
+  |----------------------------------------------------------
   | Variables for configuring session package
   |----------------------------------------------------------
   */

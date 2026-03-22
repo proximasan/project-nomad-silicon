@@ -1,12 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Project N.O.M.A.D. Installation Script
+# Project N.O.M.A.D. Installation Script (macOS / Apple Silicon)
 
 ###################################################################################################################################################################################################
 
-# Script                | Project N.O.M.A.D. Installation Script
-# Version               | 1.0.0
-# Author                | Crosstalk Solutions, LLC
+# Script                | Project N.O.M.A.D. Installation Script (macOS)
+# Version               | 2.1.0
+# Original Author       | Crosstalk Solutions, LLC
+# macOS Adaptation       | proximasan
 # Website               | https://crosstalksolutions.com
 
 ###################################################################################################################################################################################################
@@ -29,16 +30,18 @@ GREEN='\033[1;32m' # Light Green.
 ###################################################################################################################################################################################################
 
 WHIPTAIL_TITLE="Project N.O.M.A.D Installation"
-NOMAD_DIR="/opt/project-nomad"
-MANAGEMENT_COMPOSE_FILE_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/management_compose.yaml"
-SIDECAR_UPDATER_DOCKERFILE_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/sidecar-updater/Dockerfile"
-SIDECAR_UPDATER_SCRIPT_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/sidecar-updater/update-watcher.sh"
-START_SCRIPT_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/start_nomad.sh"
-STOP_SCRIPT_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/stop_nomad.sh"
-UPDATE_SCRIPT_URL="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/install/update_nomad.sh"
+NOMAD_DIR="${HOME}/project-nomad"
+MANAGEMENT_COMPOSE_FILE_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/management_compose.yaml"
+SIDECAR_UPDATER_DOCKERFILE_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/sidecar-updater/Dockerfile"
+SIDECAR_UPDATER_SCRIPT_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/sidecar-updater/update-watcher.sh"
+START_SCRIPT_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/start_nomad.sh"
+STOP_SCRIPT_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/stop_nomad.sh"
+UPDATE_SCRIPT_URL="https://raw.githubusercontent.com/proximasan/project-nomad/refs/heads/main/install/update_nomad.sh"
 script_option_debug='true'
 accepted_terms='false'
 local_ip_address=''
+use_native_ollama='false'
+apple_chip_model=''
 
 ###################################################################################################################################################################################################
 #                                                                                                                                                                                                 #
@@ -56,18 +59,6 @@ header_red() {
   echo -e "${RED}#########################################################################${RESET}\\n"
 }
 
-check_has_sudo() {
-  if sudo -n true 2>/dev/null; then
-    echo -e "${GREEN}#${RESET} User has sudo permissions.\\n"
-  else
-    echo "User does not have sudo permissions"
-    header_red
-    echo -e "${RED}#${RESET} This script requires sudo permissions to run. Please run the script with sudo.\\n"
-    echo -e "${RED}#${RESET} For example: sudo bash $(basename "$0")"
-    exit 1
-  fi
-}
-
 check_is_bash() {
   if [[ -z "$BASH_VERSION" ]]; then
     header_red
@@ -78,33 +69,48 @@ check_is_bash() {
     echo -e "${GREEN}#${RESET} This script is running in bash.\\n"
 }
 
-check_is_debian_based() {
-  if [[ ! -f /etc/debian_version ]]; then
+check_is_macos() {
+  if [[ "$(uname)" != "Darwin" ]]; then
     header_red
-    echo -e "${RED}#${RESET} This script is designed to run on Debian-based systems only.\\n"
-    echo -e "${RED}#${RESET} Please run this script on a Debian-based system and try again."
+    echo -e "${RED}#${RESET} This script is designed to run on macOS only.\\n"
+    echo -e "${RED}#${RESET} Please run this script on a Mac and try again."
     exit 1
   fi
-    echo -e "${GREEN}#${RESET} This script is running on a Debian-based system.\\n"
+  echo -e "${GREEN}#${RESET} This script is running on macOS.\\n"
+}
+
+detect_apple_chip_model() {
+  # Detect the Apple chip model for injection into the compose file.
+  # Inside Docker on macOS, systeminformation returns empty/generic CPU data,
+  # so we capture it here from the host and pass it as an environment variable.
+  apple_chip_model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+  if [[ -n "$apple_chip_model" ]]; then
+    echo -e "${GREEN}#${RESET} Detected chip: ${WHITE_R}${apple_chip_model}${RESET}\\n"
+  else
+    echo -e "${YELLOW}#${RESET} Could not detect Apple chip model. CPU info in the admin UI may be limited.\\n"
+  fi
 }
 
 ensure_dependencies_installed() {
+  # Check for Homebrew first
+  if ! command -v brew &> /dev/null; then
+    echo -e "${RED}#${RESET} Homebrew is not installed. Homebrew is required to install dependencies on macOS.\\n"
+    echo -e "${YELLOW}#${RESET} Install Homebrew by running:\\n"
+    echo -e "${WHITE_R}  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"${RESET}\\n"
+    exit 1
+  fi
+  echo -e "${GREEN}#${RESET} Homebrew is installed.\\n"
+
   local missing_deps=()
 
-  # Check for curl
+  # Check for curl (should be present on macOS, but just in case)
   if ! command -v curl &> /dev/null; then
     missing_deps+=("curl")
   fi
 
-  # Check for whiptail (used for dialogs, though not currently active)
-  # if ! command -v whiptail &> /dev/null; then
-  #   missing_deps+=("whiptail")
-  # fi
-
   if [[ ${#missing_deps[@]} -gt 0 ]]; then
     echo -e "${YELLOW}#${RESET} Installing required dependencies: ${missing_deps[*]}...\\n"
-    sudo apt-get update
-    sudo apt-get install -y "${missing_deps[@]}"
+    brew install "${missing_deps[@]}"
 
     # Verify installation
     for dep in "${missing_deps[@]}"; do
@@ -131,70 +137,72 @@ check_is_debug_mode(){
 generateRandomPass() {
   local length="${1:-32}"  # Default to 32
   local password
-  
-  # Generate random password using /dev/urandom
+
+  # Generate random password using /dev/urandom (works on macOS)
   password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length")
-  
+
   echo "$password"
 }
 
 ensure_docker_installed() {
   if ! command -v docker &> /dev/null; then
-    echo -e "${YELLOW}#${RESET} Docker not found. Installing Docker...\\n"
-    
-    # Update package database
-    sudo apt-get update
-    
-    # Install prerequisites
-    sudo apt-get install -y ca-certificates curl
-    
-    # Create directory for keyrings
-    # sudo install -m 0755 -d /etc/apt/keyrings
-    
-    # # Download Docker's official GPG key
-    # sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-    # sudo chmod a+r /etc/apt/keyrings/docker.asc
+    echo -e "${YELLOW}#${RESET} Docker not found.\\n"
 
-    # # Add the repository to Apt sources
-    # echo \
-    #   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
-    #   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-    #   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    # Check if Docker Desktop app exists but CLI isn't in PATH
+    if [[ -d "/Applications/Docker.app" ]]; then
+      echo -e "${YELLOW}#${RESET} Docker Desktop is installed but the CLI may not be in your PATH.\\n"
+      echo -e "${YELLOW}#${RESET} Attempting to start Docker Desktop...\\n"
+      open -a Docker
+      echo -e "${YELLOW}#${RESET} Waiting for Docker to start (this may take up to 60 seconds)...\\n"
 
-    # # Update the package database with the Docker packages from the newly added repo
-    # sudo apt-get update
+      local retries=30
+      while [[ $retries -gt 0 ]]; do
+        if command -v docker &> /dev/null && docker info &> /dev/null; then
+          break
+        fi
+        sleep 2
+        retries=$((retries - 1))
+      done
 
-    # # Install Docker packages
-    # sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-    # Download the Docker convenience script
-    curl -fsSL https://get.docker.com -o get-docker.sh
-
-    # Run the Docker installation script
-    sudo sh get-docker.sh
-
-    # Check if Docker was installed successfully
-    if ! command -v docker &> /dev/null; then
-      echo -e "${RED}#${RESET} Docker installation failed. Please check the logs and try again."
-      exit 1
-    fi
-    
-    echo -e "${GREEN}#${RESET} Docker installation completed.\\n"
-  else
-    echo -e "${GREEN}#${RESET} Docker is already installed.\\n"
-    
-    # Check if Docker service is running
-    if ! systemctl is-active --quiet docker; then
-      echo -e "${YELLOW}#${RESET} Docker is installed but not running. Attempting to start Docker...\\n"
-      sudo systemctl start docker
-      if ! systemctl is-active --quiet docker; then
-        echo -e "${RED}#${RESET} Failed to start Docker. Please check the Docker service status and try again."
+      if ! command -v docker &> /dev/null || ! docker info &> /dev/null; then
+        echo -e "${RED}#${RESET} Docker Desktop started but the CLI is not available.\\n"
+        echo -e "${YELLOW}#${RESET} Please ensure Docker Desktop is fully started and the CLI tools are installed.\\n"
+        echo -e "${YELLOW}#${RESET} In Docker Desktop: Settings -> General -> enable 'Install Docker CLI in system PATH'.\\n"
         exit 1
-      else
-        echo -e "${GREEN}#${RESET} Docker service started successfully.\\n"
       fi
     else
-      echo -e "${GREEN}#${RESET} Docker service is already running.\\n"
+      echo -e "${RED}#${RESET} Docker Desktop is not installed.\\n"
+      echo -e "${YELLOW}#${RESET} Please install Docker Desktop for Mac from: https://www.docker.com/products/docker-desktop/\\n"
+      echo -e "${YELLOW}#${RESET} After installing, launch Docker Desktop and run this script again.\\n"
+      exit 1
+    fi
+
+    echo -e "${GREEN}#${RESET} Docker is now available.\\n"
+  else
+    echo -e "${GREEN}#${RESET} Docker is already installed.\\n"
+
+    # Check if Docker daemon is running
+    if ! docker info &> /dev/null; then
+      echo -e "${YELLOW}#${RESET} Docker is installed but not running. Attempting to start Docker Desktop...\\n"
+      open -a Docker
+
+      local retries=30
+      while [[ $retries -gt 0 ]]; do
+        if docker info &> /dev/null; then
+          break
+        fi
+        sleep 2
+        retries=$((retries - 1))
+      done
+
+      if ! docker info &> /dev/null; then
+        echo -e "${RED}#${RESET} Failed to start Docker Desktop. Please start it manually and try again."
+        exit 1
+      else
+        echo -e "${GREEN}#${RESET} Docker Desktop started successfully.\\n"
+      fi
+    else
+      echo -e "${GREEN}#${RESET} Docker is running.\\n"
     fi
   fi
 }
@@ -204,138 +212,92 @@ check_docker_compose() {
   if ! docker compose version &>/dev/null; then
     echo -e "${RED}#${RESET} Docker Compose v2 is not installed or not available as a Docker plugin."
     echo -e "${YELLOW}#${RESET} This script requires 'docker compose' (v2), not 'docker-compose' (v1)."
-    echo -e "${YELLOW}#${RESET} Please read the Docker documentation at https://docs.docker.com/compose/install/ for instructions on how to install Docker Compose v2."
+    echo -e "${YELLOW}#${RESET} Docker Desktop for Mac should include Docker Compose v2 by default."
+    echo -e "${YELLOW}#${RESET} Please ensure Docker Desktop is up to date."
     exit 1
   fi
 }
 
-setup_nvidia_container_toolkit() {
-  # This function attempts to set up NVIDIA GPU support but is non-blocking
-  # Any failures will result in warnings but will NOT stop the installation process
-  
-  echo -e "${YELLOW}#${RESET} Checking for NVIDIA GPU...\\n"
-  
-  # Safely detect NVIDIA GPU
-  local has_nvidia_gpu=false
-  if command -v lspci &> /dev/null; then
-    if lspci 2>/dev/null | grep -i nvidia &> /dev/null; then
-      has_nvidia_gpu=true
-      echo -e "${GREEN}#${RESET} NVIDIA GPU detected.\\n"
-    fi
-  fi
-  
-  # Also check for nvidia-smi
-  if ! $has_nvidia_gpu && command -v nvidia-smi &> /dev/null; then
-    if nvidia-smi &> /dev/null; then
-      has_nvidia_gpu=true
-      echo -e "${GREEN}#${RESET} NVIDIA GPU detected via nvidia-smi.\\n"
-    fi
-  fi
-  
-  if ! $has_nvidia_gpu; then
-    echo -e "${YELLOW}#${RESET} No NVIDIA GPU detected. Skipping NVIDIA container toolkit installation.\\n"
+prompt_ollama_mode() {
+  # Ask the user whether to install Ollama natively (recommended for GPU acceleration)
+  # or use the Docker-based Ollama (no Metal GPU access).
+  echo ""
+  echo -e "${YELLOW}#########################################################################${RESET}"
+  echo -e "${YELLOW}#${RESET} Ollama Installation Mode"
+  echo -e "${YELLOW}#########################################################################${RESET}"
+  echo ""
+  echo -e "${WHITE_R}  Docker on macOS cannot pass through Metal GPU acceleration to containers.${RESET}"
+  echo -e "${WHITE_R}  Installing Ollama natively allows AI models to use your Apple Silicon GPU${RESET}"
+  echo -e "${WHITE_R}  for significantly faster inference.${RESET}"
+  echo ""
+  echo -e "${GREEN}  Option 1 (Recommended):${RESET} Native Ollama via Homebrew"
+  echo -e "${WHITE_R}    - Full Metal GPU acceleration on Apple Silicon${RESET}"
+  echo -e "${WHITE_R}    - Runs as a background service on your Mac${RESET}"
+  echo -e "${WHITE_R}    - Best performance for AI workloads${RESET}"
+  echo ""
+  echo -e "${YELLOW}  Option 2:${RESET} Docker-based Ollama"
+  echo -e "${WHITE_R}    - Runs inside a Docker container (no GPU acceleration)${RESET}"
+  echo -e "${WHITE_R}    - CPU-only inference (significantly slower)${RESET}"
+  echo -e "${WHITE_R}    - Fully containerized${RESET}"
+  echo ""
+  read -p "Install Ollama natively for GPU acceleration? (Y/n): " ollama_choice
+  case "$ollama_choice" in
+    n|N )
+      use_native_ollama='false'
+      echo -e "${YELLOW}#${RESET} Docker-based Ollama selected. AI models will run in CPU-only mode.\\n"
+      ;;
+    * )
+      use_native_ollama='true'
+      echo -e "${GREEN}#${RESET} Native Ollama selected. AI models will have Metal GPU acceleration.\\n"
+      ;;
+  esac
+}
+
+install_native_ollama() {
+  if [[ "${use_native_ollama}" != 'true' ]]; then
     return 0
   fi
-  
-  # Check if nvidia-container-toolkit is already installed
-  if command -v nvidia-ctk &> /dev/null; then
-    echo -e "${GREEN}#${RESET} NVIDIA container toolkit is already installed.\\n"
-    return 0
-  fi
-  
-  echo -e "${YELLOW}#${RESET} Installing NVIDIA container toolkit...\\n"
-  
-  # Install dependencies per https://docs.ollama.com/docker - wrapped in error handling
-  if ! curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey 2>/dev/null | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null; then
-    echo -e "${YELLOW}#${RESET} Warning: Failed to add NVIDIA container toolkit GPG key. Continuing anyway...\\n"
-    return 0
-  fi
-  
-  if ! curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list 2>/dev/null \
-      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-      | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null 2>&1; then
-    echo -e "${YELLOW}#${RESET} Warning: Failed to add NVIDIA container toolkit repository. Continuing anyway...\\n"
-    return 0
-  fi
-  
-  if ! sudo apt-get update 2>/dev/null; then
-    echo -e "${YELLOW}#${RESET} Warning: Failed to update package list. Continuing anyway...\\n"
-    return 0
-  fi
-  
-  if ! sudo apt-get install -y nvidia-container-toolkit 2>/dev/null; then
-    echo -e "${YELLOW}#${RESET} Warning: Failed to install NVIDIA container toolkit. Continuing anyway...\\n"
-    return 0
-  fi
-  
-  echo -e "${GREEN}#${RESET} NVIDIA container toolkit installed successfully.\\n"
-  
-  # Configure Docker to use NVIDIA runtime
-  echo -e "${YELLOW}#${RESET} Configuring Docker to use NVIDIA runtime...\\n"
-  
-  if ! sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
-    echo -e "${YELLOW}#${RESET} nvidia-ctk configure failed, attempting manual configuration...\\n"
-    
-    # Fallback: Manually configure daemon.json
-    local daemon_json="/etc/docker/daemon.json"
-    local config_success=false
-    
-    if [[ -f "$daemon_json" ]]; then
-      # Backup existing config (best effort)
-      sudo cp "$daemon_json" "${daemon_json}.backup" 2>/dev/null || true
-      
-      # Check if nvidia runtime already exists
-      if ! grep -q '"nvidia"' "$daemon_json" 2>/dev/null; then
-        # Add nvidia runtime to existing config using jq if available
-        if command -v jq &> /dev/null; then
-          if sudo jq '. + {"runtimes": {"nvidia": {"path": "nvidia-container-runtime", "runtimeArgs": []}}}' "$daemon_json" > /tmp/daemon.json.tmp 2>/dev/null; then
-            if sudo mv /tmp/daemon.json.tmp "$daemon_json" 2>/dev/null; then
-              config_success=true
-            fi
-          fi
-          # Clean up temp file if move failed
-          sudo rm -f /tmp/daemon.json.tmp 2>/dev/null || true
-        else
-          echo -e "${YELLOW}#${RESET} jq not available, skipping manual daemon.json configuration...\\n"
-        fi
-      else
-        config_success=true  # Already configured
-      fi
-    else
-      # Create new daemon.json with nvidia runtime (best effort)
-      if echo '{"runtimes":{"nvidia":{"path":"nvidia-container-runtime","runtimeArgs":[]}}}' | sudo tee "$daemon_json" > /dev/null 2>&1; then
-        config_success=true
-      fi
-    fi
-    
-    if ! $config_success; then
-      echo -e "${YELLOW}#${RESET} Manual daemon.json configuration unsuccessful. GPU support may require manual setup.\\n"
-    fi
-  fi
-  
-  # Restart Docker service
-  echo -e "${YELLOW}#${RESET} Restarting Docker service...\\n"
-  if ! sudo systemctl restart docker 2>/dev/null; then
-    echo -e "${YELLOW}#${RESET} Warning: Failed to restart Docker service. You may need to restart it manually.\\n"
-    return 0
-  fi
-  
-  # Verify NVIDIA runtime is available
-  echo -e "${YELLOW}#${RESET} Verifying NVIDIA runtime configuration...\\n"
-  sleep 2  # Give Docker a moment to fully restart
-  
-  if docker info 2>/dev/null | grep -q "nvidia"; then
-    echo -e "${GREEN}#${RESET} NVIDIA runtime successfully configured and verified.\\n"
+
+  echo -e "${YELLOW}#${RESET} Setting up native Ollama...\\n"
+
+  if command -v ollama &> /dev/null; then
+    echo -e "${GREEN}#${RESET} Ollama is already installed.\\n"
   else
-    echo -e "${YELLOW}#${RESET} Warning: NVIDIA runtime not detected in Docker info. GPU acceleration may not work.\\n"
-    echo -e "${YELLOW}#${RESET} You may need to manually configure /etc/docker/daemon.json and restart Docker.\\n"
+    echo -e "${YELLOW}#${RESET} Installing Ollama via Homebrew...\\n"
+    if ! brew install ollama; then
+      echo -e "${RED}#${RESET} Failed to install Ollama via Homebrew.\\n"
+      echo -e "${YELLOW}#${RESET} You can install it manually later from: https://ollama.com/download\\n"
+      echo -e "${YELLOW}#${RESET} Falling back to Docker-based Ollama.\\n"
+      use_native_ollama='false'
+      return 0
+    fi
+    echo -e "${GREEN}#${RESET} Ollama installed successfully.\\n"
   fi
-  
-  echo -e "${GREEN}#${RESET} NVIDIA container toolkit configuration completed.\\n"
+
+  # Start Ollama as a background service using brew services
+  echo -e "${YELLOW}#${RESET} Starting Ollama service...\\n"
+  brew services start ollama 2>/dev/null || true
+
+  # Wait briefly for Ollama to start
+  local retries=10
+  while [[ $retries -gt 0 ]]; do
+    if curl -s http://localhost:11434/api/version &> /dev/null; then
+      break
+    fi
+    sleep 1
+    retries=$((retries - 1))
+  done
+
+  if curl -s http://localhost:11434/api/version &> /dev/null; then
+    echo -e "${GREEN}#${RESET} Ollama is running and accessible at http://localhost:11434\\n"
+  else
+    echo -e "${YELLOW}#${RESET} Ollama installed but not yet responding. It may need a moment to start.\\n"
+    echo -e "${YELLOW}#${RESET} You can start it manually with: ${WHITE_R}brew services start ollama${RESET}\\n"
+  fi
 }
 
 get_install_confirmation(){
-  echo -e "${YELLOW}#${RESET} This script will install Project N.O.M.A.D. and its dependencies on your machine."
+  echo -e "${YELLOW}#${RESET} This script will install Project N.O.M.A.D. and its dependencies on your Mac."
   echo -e "${YELLOW}#${RESET} If you already have Project N.O.M.A.D. installed with customized config or data, please be aware that running this installation script may overwrite existing files and configurations. It is highly recommended to back up any important data/configs before proceeding."
   read -p "Are you sure you want to continue? (y/N): " choice
   case "$choice" in
@@ -371,22 +333,23 @@ accept_terms() {
 }
 
 create_nomad_directory(){
-  # Ensure the main installation directory exists
+  # Ensure the main installation directory exists (in user home, no sudo needed)
   if [[ ! -d "$NOMAD_DIR" ]]; then
     echo -e "${YELLOW}#${RESET} Creating directory for Project N.O.M.A.D at $NOMAD_DIR...\\n"
-    sudo mkdir -p "$NOMAD_DIR"
-    sudo chown "$(whoami):$(whoami)" "$NOMAD_DIR"
-
+    mkdir -p "$NOMAD_DIR"
     echo -e "${GREEN}#${RESET} Directory created successfully.\\n"
   else
     echo -e "${GREEN}#${RESET} Directory $NOMAD_DIR already exists.\\n"
   fi
 
-  # Also ensure the directory has a /storage/logs/ subdirectory
-  sudo mkdir -p "${NOMAD_DIR}/storage/logs"
+  # Create subdirectories. Use directory mounts rather than individual file mounts
+  # to avoid Docker Desktop's bind-mount bug where missing files become directories.
+  mkdir -p "${NOMAD_DIR}/storage/logs"
+  mkdir -p "${NOMAD_DIR}/mysql"
+  mkdir -p "${NOMAD_DIR}/redis"
 
-  # Create a admin.log file in the logs directory
-  sudo touch "${NOMAD_DIR}/storage/logs/admin.log"
+  # Create an admin.log file in the logs directory
+  touch "${NOMAD_DIR}/storage/logs/admin.log"
 }
 
 download_management_compose_file() {
@@ -399,27 +362,52 @@ download_management_compose_file() {
   fi
   echo -e "${GREEN}#${RESET} Docker compose file downloaded successfully to $compose_file_path.\\n"
 
-  local app_key=$(generateRandomPass)
-  local db_root_password=$(generateRandomPass)
-  local db_user_password=$(generateRandomPass)
+  local app_key
+  local db_root_password
+  local db_user_password
+  app_key=$(generateRandomPass)
+  db_root_password=$(generateRandomPass)
+  db_user_password=$(generateRandomPass)
+
+  # Replace the storage path placeholder with the actual NOMAD_DIR (BSD sed requires -i '')
+  echo -e "${YELLOW}#${RESET} Configuring storage paths in docker-compose file...\\n"
+  sed -i '' "s|NOMAD_STORAGE_PATH_PLACEHOLDER|${NOMAD_DIR}|g" "$compose_file_path"
 
   # Inject dynamic env values into the compose file
   echo -e "${YELLOW}#${RESET} Configuring docker-compose file env variables...\\n"
-  sed -i "s|URL=replaceme|URL=http://${local_ip_address}:8080|g" "$compose_file_path"
-  sed -i "s|APP_KEY=replaceme|APP_KEY=${app_key}|g" "$compose_file_path"
-  
-  sed -i "s|DB_PASSWORD=replaceme|DB_PASSWORD=${db_user_password}|g" "$compose_file_path"
-  sed -i "s|MYSQL_ROOT_PASSWORD=replaceme|MYSQL_ROOT_PASSWORD=${db_root_password}|g" "$compose_file_path"
-  sed -i "s|MYSQL_PASSWORD=replaceme|MYSQL_PASSWORD=${db_user_password}|g" "$compose_file_path"
-  
+  sed -i '' "s|URL=replaceme|URL=http://${local_ip_address}:8080|g" "$compose_file_path"
+  sed -i '' "s|APP_KEY=replaceme|APP_KEY=${app_key}|g" "$compose_file_path"
+
+  sed -i '' "s|DB_PASSWORD=replaceme|DB_PASSWORD=${db_user_password}|g" "$compose_file_path"
+  sed -i '' "s|MYSQL_ROOT_PASSWORD=replaceme|MYSQL_ROOT_PASSWORD=${db_root_password}|g" "$compose_file_path"
+  sed -i '' "s|MYSQL_PASSWORD=replaceme|MYSQL_PASSWORD=${db_user_password}|g" "$compose_file_path"
+
+  # Inject APPLE_CHIP_MODEL environment variable into the admin service.
+  # systeminformation returns empty/generic CPU data inside Docker on macOS,
+  # so we pass the detected chip model from the host for display in the admin UI.
+  if [[ -n "$apple_chip_model" ]]; then
+    echo -e "${YELLOW}#${RESET} Injecting Apple chip model into compose environment...\\n"
+    # Add APPLE_CHIP_MODEL after the REDIS_PORT line in the admin service environment block
+    sed -i '' "/- REDIS_PORT=6379/a\\
+      - APPLE_CHIP_MODEL=${apple_chip_model}" "$compose_file_path"
+  fi
+
+  # If native Ollama is chosen, inject OLLAMA_HOST so the admin container
+  # reaches the host-native Ollama via Docker Desktop's special DNS name.
+  if [[ "${use_native_ollama}" == 'true' ]]; then
+    echo -e "${YELLOW}#${RESET} Configuring native Ollama connection (host.docker.internal)...\\n"
+    # Add OLLAMA_HOST after the REDIS_PORT line in the admin service environment block
+    sed -i '' "/- REDIS_PORT=6379/a\\
+      - OLLAMA_HOST=http://host.docker.internal:11434" "$compose_file_path"
+  fi
+
   echo -e "${GREEN}#${RESET} Docker compose file configured successfully.\\n"
 }
 
 download_sidecar_files() {
   # Create sidecar-updater directory if it doesn't exist
   if [[ ! -d "${NOMAD_DIR}/sidecar-updater" ]]; then
-    sudo mkdir -p "${NOMAD_DIR}/sidecar-updater"
-    sudo chown "$(whoami):$(whoami)" "${NOMAD_DIR}/sidecar-updater"
+    mkdir -p "${NOMAD_DIR}/sidecar-updater"
   fi
 
   local sidecar_dockerfile_path="${NOMAD_DIR}/sidecar-updater/Dockerfile"
@@ -470,7 +458,7 @@ download_helper_scripts() {
 
 start_management_containers() {
   echo -e "${YELLOW}#${RESET} Starting management containers using docker compose...\\n"
-  if ! sudo docker compose -p project-nomad -f "${NOMAD_DIR}/compose.yml" up -d; then
+  if ! docker compose -p project-nomad -f "${NOMAD_DIR}/compose.yml" up -d; then
     echo -e "${RED}#${RESET} Failed to start management containers. Please check the logs and try again."
     exit 1
   fi
@@ -478,69 +466,99 @@ start_management_containers() {
 }
 
 get_local_ip() {
-  local_ip_address=$(hostname -I | awk '{print $1}')
+  # Try common macOS network interfaces
+  local_ip_address=$(ipconfig getifaddr en0 2>/dev/null)
+
+  if [[ -z "$local_ip_address" ]]; then
+    # Fallback to en1 (some Macs use en1 for Wi-Fi)
+    local_ip_address=$(ipconfig getifaddr en1 2>/dev/null)
+  fi
+
+  if [[ -z "$local_ip_address" ]]; then
+    # Fallback: iterate over all interfaces
+    local iface
+    for iface in $(ifconfig -l 2>/dev/null); do
+      local_ip_address=$(ipconfig getifaddr "$iface" 2>/dev/null)
+      if [[ -n "$local_ip_address" ]]; then
+        break
+      fi
+    done
+  fi
+
   if [[ -z "$local_ip_address" ]]; then
     echo -e "${RED}#${RESET} Unable to determine local IP address. Please check your network configuration."
     exit 1
   fi
 }
-verify_gpu_setup() {
-  # This function only displays GPU setup status and is completely non-blocking
-  # It never exits or returns error codes - purely informational
-  
-  echo -e "\\n${YELLOW}#${RESET} GPU Setup Verification\\n"
+
+verify_apple_silicon() {
+  # This function displays Apple Silicon / GPU status and is completely non-blocking
+
+  echo -e "\\n${YELLOW}#${RESET} Hardware Verification\\n"
   echo -e "${YELLOW}===========================================${RESET}\\n"
-  
-  # Check if NVIDIA GPU is present
-  if command -v nvidia-smi &> /dev/null; then
-    echo -e "${GREEN}✓${RESET} NVIDIA GPU detected:"
-    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | while read -r line; do
-      echo -e "  ${WHITE_R}$line${RESET}"
-    done
-    echo ""
+
+  # Display detected chip model
+  if [[ -n "$apple_chip_model" ]]; then
+    echo -e "${GREEN}#${RESET} CPU: ${WHITE_R}${apple_chip_model}${RESET}\\n"
   else
-    echo -e "${YELLOW}○${RESET} No NVIDIA GPU detected (nvidia-smi not available)\\n"
+    echo -e "${YELLOW}#${RESET} Unable to detect CPU information.\\n"
   fi
-  
-  # Check if NVIDIA Container Toolkit is installed
-  if command -v nvidia-ctk &> /dev/null; then
-    echo -e "${GREEN}✓${RESET} NVIDIA Container Toolkit installed: $(nvidia-ctk --version 2>/dev/null | head -n1)\\n"
+
+  # Check for Apple Silicon (M-series)
+  local arch
+  arch=$(uname -m)
+
+  if [[ "$arch" == "arm64" ]]; then
+    echo -e "${GREEN}#${RESET} Architecture: Apple Silicon (arm64)\\n"
   else
-    echo -e "${YELLOW}○${RESET} NVIDIA Container Toolkit not installed\\n"
+    echo -e "${YELLOW}#${RESET} Architecture: ${arch} (not Apple Silicon - some features may not be available)\\n"
   fi
-  
-  # Check if Docker has NVIDIA runtime
-  if docker info 2>/dev/null | grep -q \"nvidia\"; then
-    echo -e "${GREEN}✓${RESET} Docker NVIDIA runtime configured\\n"
+
+  # Check for Metal support (Apple's GPU framework)
+  if system_profiler SPDisplaysDataType 2>/dev/null | grep -qi "metal"; then
+    echo -e "${GREEN}#${RESET} Metal GPU acceleration: Supported\\n"
   else
-    echo -e "${YELLOW}○${RESET} Docker NVIDIA runtime not detected\\n"
+    echo -e "${YELLOW}#${RESET} Metal GPU acceleration: Not detected\\n"
   fi
-  
-  # Check for AMD GPU
-  if command -v lspci &> /dev/null; then
-    if lspci 2>/dev/null | grep -iE "amd|radeon" &> /dev/null; then
-      echo -e "${YELLOW}○${RESET} AMD GPU detected (ROCm support not currently available)\\n"
-    fi
+
+  # Display memory info (unified memory on Apple Silicon)
+  local total_mem
+  total_mem=$(sysctl -n hw.memsize 2>/dev/null)
+  if [[ -n "$total_mem" ]]; then
+    local mem_gb=$((total_mem / 1073741824))
+    echo -e "${GREEN}#${RESET} Unified Memory: ${WHITE_R}${mem_gb} GB${RESET}\\n"
   fi
-  
+
+  # Ollama mode
+  if [[ "${use_native_ollama}" == 'true' ]]; then
+    echo -e "${GREEN}#${RESET} Ollama: Native (Metal GPU acceleration enabled)\\n"
+  else
+    echo -e "${YELLOW}#${RESET} Ollama: Docker-based (CPU-only, no GPU acceleration)\\n"
+  fi
+
   echo -e "${YELLOW}===========================================${RESET}\\n"
-  
+
   # Summary
-  if command -v nvidia-smi &> /dev/null && docker info 2>/dev/null | grep -q \"nvidia\"; then
-    echo -e "${GREEN}#${RESET} GPU acceleration is properly configured! The AI Assistant will use your GPU.\\n"
+  if [[ "$arch" == "arm64" && "${use_native_ollama}" == 'true' ]]; then
+    echo -e "${GREEN}#${RESET} Apple Silicon detected with native Ollama. AI models will use Metal GPU acceleration.\\n"
+  elif [[ "$arch" == "arm64" ]]; then
+    echo -e "${YELLOW}#${RESET} Apple Silicon detected but Ollama is running in Docker (CPU-only).\\n"
+    echo -e "${YELLOW}#${RESET} For GPU acceleration, reinstall with native Ollama or run:${RESET}\\n"
+    echo -e "${WHITE_R}    brew install ollama && brew services start ollama${RESET}\\n"
   else
-    echo -e "${YELLOW}#${RESET} GPU acceleration not detected. The AI Assistant will run in CPU-only mode.\\n"
-    if command -v nvidia-smi &> /dev/null && ! docker info 2>/dev/null | grep -q \"nvidia\"; then
-      echo -e "${YELLOW}#${RESET} Tip: Your GPU is detected but Docker runtime is not configured.\\n"
-      echo -e "${YELLOW}#${RESET} Try restarting Docker: ${WHITE_R}sudo systemctl restart docker${RESET}\\n"
-    fi
+    echo -e "${YELLOW}#${RESET} Running on Intel Mac. AI workloads will use CPU-only mode.\\n"
   fi
 }
 
 success_message() {
   echo -e "${GREEN}#${RESET} Project N.O.M.A.D installation completed successfully!\\n"
-  echo -e "${GREEN}#${RESET} Installation files are located at /opt/project-nomad\\n\n"
-  echo -e "${GREEN}#${RESET} Project N.O.M.A.D's Command Center should automatically start whenever your device reboots. However, if you need to start it manually, you can always do so by running: ${WHITE_R}${NOMAD_DIR}/start_nomad.sh${RESET}\\n"
+  echo -e "${GREEN}#${RESET} Installation files are located at ${NOMAD_DIR}\\n\\n"
+  echo -e "${GREEN}#${RESET} To start Project N.O.M.A.D, run: ${WHITE_R}${NOMAD_DIR}/start_nomad.sh${RESET}\\n"
+  echo -e "${GREEN}#${RESET} To stop Project N.O.M.A.D, run: ${WHITE_R}${NOMAD_DIR}/stop_nomad.sh${RESET}\\n"
+  echo -e "${GREEN}#${RESET} To update Project N.O.M.A.D, run: ${WHITE_R}${NOMAD_DIR}/update_nomad.sh${RESET}\\n"
+  if [[ "${use_native_ollama}" == 'true' ]]; then
+    echo -e "${GREEN}#${RESET} Ollama (native): Manage with ${WHITE_R}brew services start/stop ollama${RESET}\\n"
+  fi
   echo -e "${GREEN}#${RESET} You can now access the management interface at http://localhost:8080 or http://${local_ip_address}:8080\\n"
   echo -e "${GREEN}#${RESET} Thank you for supporting Project N.O.M.A.D!\\n"
 }
@@ -552,55 +570,24 @@ success_message() {
 ###################################################################################################################################################################################################
 
 # Pre-flight checks
-check_is_debian_based
+check_is_macos
 check_is_bash
-check_has_sudo
 ensure_dependencies_installed
 check_is_debug_mode
+detect_apple_chip_model
 
 # Main install
 get_install_confirmation
 accept_terms
 ensure_docker_installed
 check_docker_compose
-setup_nvidia_container_toolkit
+prompt_ollama_mode
+install_native_ollama
 get_local_ip
 create_nomad_directory
 download_sidecar_files
 download_helper_scripts
 download_management_compose_file
 start_management_containers
-verify_gpu_setup
+verify_apple_silicon
 success_message
-
-# free_space_check() {
-#   if [[ "$(df -B1 / | awk 'NR==2{print $4}')" -le '5368709120' ]]; then
-#     header_red
-#     echo -e "${YELLOW}#${RESET} You only have $(df -B1 / | awk 'NR==2{print $4}' | awk '{ split( "B KB MB GB TB PB EB ZB YB" , v ); s=1; while( $1>1024 && s<9 ){ $1/=1024; s++ } printf "%.1f %s", $1, v[s] }') of disk space available on \"/\"... \\n"
-#     while true; do
-#       read -rp $'\033[39m#\033[0m Do you want to proceed with running the script? (y/N) ' yes_no
-#       case "$yes_no" in
-#          [Nn]*|"")
-#             free_space_check_response="Cancel script"
-#             free_space_check_date="$(date +%s)"
-#             echo -e "${YELLOW}#${RESET} OK... Please free up disk space before running the script again..."
-#             cancel_script
-#             break;;
-#          [Yy]*)
-#             free_space_check_response="Proceed at own risk"
-#             free_space_check_date="$(date +%s)"
-#             echo -e "${YELLOW}#${RESET} OK... Proceeding with the script.. please note that failures may occur due to not enough disk space... \\n"; sleep 10
-#             break;;
-#          *) echo -e "\\n${RED}#${RESET} Invalid input, please answer Yes or No (y/n)...\\n"; sleep 3;;
-#       esac
-#     done
-#     if [[ -n "$(command -v jq)" ]]; then
-#       if [[ "$(dpkg-query --showformat='${version}' --show jq 2> /dev/null | sed -e 's/.*://' -e 's/-.*//g' -e 's/[^0-9.]//g' -e 's/\.//g' | sort -V | tail -n1)" -ge "16" && -e "${eus_dir}/db/db.json" ]]; then
-#         jq '.scripts."'"${script_name}"'" += {"warnings": {"low-free-disk-space": {"response": "'"${free_space_check_response}"'", "detected-date": "'"${free_space_check_date}"'"}}}' "${eus_dir}/db/db.json" > "${eus_dir}/db/db.json.tmp" 2>> "${eus_dir}/logs/eus-database-management.log"
-#       else
-#         jq '.scripts."'"${script_name}"'" = (.scripts."'"${script_name}"'" | . + {"warnings": {"low-free-disk-space": {"response": "'"${free_space_check_response}"'", "detected-date": "'"${free_space_check_date}"'"}}})' "${eus_dir}/db/db.json" > "${eus_dir}/db/db.json.tmp" 2>> "${eus_dir}/logs/eus-database-management.log"
-#       fi
-#       eus_database_move
-#     fi
-#   fi
-# }

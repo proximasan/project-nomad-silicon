@@ -86,6 +86,8 @@ N.O.M.A.D. includes a built-in AI chat interface powered by Ollama. It runs enti
 
 **GPU Acceleration:** If your server has an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed, N.O.M.A.D. will automatically use it for AI — dramatically faster responses (10-20x improvement). If you add a GPU later, go to [Apps](/settings/apps) and **Force Reinstall** the AI Assistant to enable it.
 
+**Apple Silicon (macOS):** If you're running N.O.M.A.D. on a Mac with Apple Silicon (M1/M2/M3/M4), Docker containers cannot access the Metal/MPS GPU. The Docker-based AI Assistant will run on CPU only. For GPU-accelerated AI on macOS, install [Ollama natively](https://ollama.com/download/mac) — it can use Metal for significantly faster inference. N.O.M.A.D. requires [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) to be installed and running.
+
 ---
 
 ### Knowledge Base — Document-Aware AI

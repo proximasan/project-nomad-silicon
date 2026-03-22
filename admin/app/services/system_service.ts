@@ -240,10 +240,20 @@ export class SystemService {
         logger.error('Error reading disk info file:', error)
       }
 
+      // If si.cpu() returned empty/generic data (common inside Docker on macOS),
+      // fall back to APPLE_CHIP_MODEL env var injected by the install script
+      const appleChipModel = process.env.APPLE_CHIP_MODEL
+      if (appleChipModel && (!cpu.brand || cpu.brand === '' || cpu.brand === 'Unknown')) {
+        cpu.brand = appleChipModel
+        cpu.manufacturer = 'Apple'
+        logger.info(`[SystemService] Using APPLE_CHIP_MODEL env var for CPU identification: ${appleChipModel}`)
+      }
+
       // GPU health tracking — detect when host has NVIDIA GPU but Ollama can't access it
       let gpuHealth: GpuHealthStatus = {
         status: 'no_gpu',
         hasNvidiaRuntime: false,
+        hasAppleMetal: false,
         ollamaGpuAccessible: false,
       }
 
@@ -262,34 +272,79 @@ export class SystemService {
           os.kernel = dockerInfo.KernelVersion
         }
 
-        // If si.graphics() returned no controllers (common inside Docker),
-        // fall back to nvidia runtime + nvidia-smi detection
-        if (!graphics.controllers || graphics.controllers.length === 0) {
-          const runtimes = dockerInfo.Runtimes || {}
-          if ('nvidia' in runtimes) {
-            gpuHealth.hasNvidiaRuntime = true
-            const nvidiaInfo = await this.getNvidiaSmiInfo()
-            if (Array.isArray(nvidiaInfo)) {
-              graphics.controllers = nvidiaInfo.map((gpu) => ({
-                model: gpu.model,
-                vendor: gpu.vendor,
-                bus: "",
-                vram: gpu.vram,
-                vramDynamic: false, // assume false here, we don't actually use this field for our purposes.
-              }))
-              gpuHealth.status = 'ok'
-              gpuHealth.ollamaGpuAccessible = true
-            } else if (nvidiaInfo === 'OLLAMA_NOT_FOUND') {
-              gpuHealth.status = 'ollama_not_installed'
-            } else {
-              gpuHealth.status = 'passthrough_failed'
-              logger.warn(`NVIDIA runtime detected but GPU passthrough failed: ${typeof nvidiaInfo === 'string' ? nvidiaInfo : JSON.stringify(nvidiaInfo)}`)
+        // Detect Apple Silicon via Docker info
+        const arch = dockerInfo.Architecture || ''
+        const kernelVersion = dockerInfo.KernelVersion || ''
+        const isAppleSilicon = (
+          (process.platform === 'darwin' && arch === 'aarch64') ||
+          (arch === 'aarch64' && kernelVersion.includes('linuxkit'))
+        )
+
+        if (isAppleSilicon) {
+          gpuHealth.hasAppleMetal = true
+          if (DockerService.isNativeOllama()) {
+            // Native Ollama with Metal — GPU acceleration is available
+            gpuHealth.status = 'apple_metal'
+            gpuHealth.ollamaGpuAccessible = true
+
+            // Add Apple GPU to graphics controllers if empty
+            if (!graphics.controllers || graphics.controllers.length === 0) {
+              const chipModel = appleChipModel || 'Apple Silicon'
+              graphics.controllers = [{
+                model: `${chipModel} GPU (Metal)`,
+                vendor: 'Apple',
+                bus: '',
+                vram: 0, // Apple Silicon uses unified memory
+                vramDynamic: false,
+              }]
+            }
+          } else {
+            // Docker-based Ollama on Apple Silicon — no GPU passthrough
+            gpuHealth.status = 'apple_metal'
+            gpuHealth.ollamaGpuAccessible = false
+
+            if (!graphics.controllers || graphics.controllers.length === 0) {
+              const chipModel = appleChipModel || 'Apple Silicon'
+              graphics.controllers = [{
+                model: `${chipModel} GPU (Metal — not available in Docker)`,
+                vendor: 'Apple',
+                bus: '',
+                vram: 0,
+                vramDynamic: false,
+              }]
             }
           }
         } else {
-          // si.graphics() returned controllers (host install, not Docker) — GPU is working
-          gpuHealth.status = 'ok'
-          gpuHealth.ollamaGpuAccessible = true
+          // Non-Apple: Check for NVIDIA GPU support
+          // If si.graphics() returned no controllers (common inside Docker),
+          // fall back to nvidia runtime + nvidia-smi detection
+          if (!graphics.controllers || graphics.controllers.length === 0) {
+            const runtimes = dockerInfo.Runtimes || {}
+            if ('nvidia' in runtimes) {
+              gpuHealth.hasNvidiaRuntime = true
+              const nvidiaInfo = await this.getNvidiaSmiInfo()
+              if (Array.isArray(nvidiaInfo)) {
+                graphics.controllers = nvidiaInfo.map((gpu) => ({
+                  model: gpu.model,
+                  vendor: gpu.vendor,
+                  bus: "",
+                  vram: gpu.vram,
+                  vramDynamic: false, // assume false here, we don't actually use this field for our purposes.
+                }))
+                gpuHealth.status = 'ok'
+                gpuHealth.ollamaGpuAccessible = true
+              } else if (nvidiaInfo === 'OLLAMA_NOT_FOUND') {
+                gpuHealth.status = 'ollama_not_installed'
+              } else {
+                gpuHealth.status = 'passthrough_failed'
+                logger.warn(`NVIDIA runtime detected but GPU passthrough failed: ${typeof nvidiaInfo === 'string' ? nvidiaInfo : JSON.stringify(nvidiaInfo)}`)
+              }
+            }
+          } else {
+            // si.graphics() returned controllers (host install, not Docker) — GPU is working
+            gpuHealth.status = 'ok'
+            gpuHealth.ollamaGpuAccessible = true
+          }
         }
       } catch {
         // Docker info query failed, skip host-level enrichment

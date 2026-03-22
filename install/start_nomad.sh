@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+# Project N.O.M.A.D. Start Script (macOS)
 
 echo "Finding Project N.O.M.A.D containers..."
 
@@ -17,9 +19,9 @@ echo ""
 for container in $containers; do
     echo "Starting container: $container"
     if docker start "$container"; then
-        echo "✓ Successfully started $container"
+        echo "Successfully started $container"
     else
-        echo "✗ Failed to start $container"
+        echo "Failed to start $container"
     fi
     echo ""
 done

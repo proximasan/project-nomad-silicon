@@ -16,7 +16,7 @@ N.O.M.A.D. is designed for capable hardware, especially if you want to use the A
 - Modern multi-core CPU (AMD Ryzen 7 with Radeon graphics is the community sweet spot)
 - 16GB+ RAM (32GB+ for best AI performance)
 - SSD storage (size depends on content — 500GB minimum, 1TB+ recommended)
-- NVIDIA or AMD GPU recommended for faster AI responses
+- NVIDIA or AMD GPU recommended for faster AI responses (on macOS with Apple Silicon, Metal acceleration is available with native Ollama)
 
 **For detailed build recommendations at three price points ($150–$1,000+), see the [Hardware Guide](https://www.projectnomad.us/hardware).**
 
@@ -118,11 +118,14 @@ The Maps feature requires downloaded map data. If you see a blank area:
 
 Local AI requires significant computing power. To improve speed:
 - **Add a GPU** — An NVIDIA GPU with the NVIDIA Container Toolkit can improve AI speed by 10-20x or more
+- **Apple Silicon (macOS)** — Docker containers cannot access Metal/MPS. For GPU-accelerated AI on Mac, install [Ollama natively](https://ollama.com/download/mac) instead of using the Docker-based AI Assistant
 - Close other applications on the server
 - Ensure adequate cooling (overheating causes throttling)
 - Consider using a smaller/faster AI model if available
 
 ### How do I enable GPU acceleration for AI?
+
+**NVIDIA GPU (Linux):**
 
 N.O.M.A.D. automatically detects NVIDIA GPUs when the NVIDIA Container Toolkit is installed on the host system. To set up GPU acceleration:
 
@@ -131,6 +134,10 @@ N.O.M.A.D. automatically detects NVIDIA GPUs when the NVIDIA Container Toolkit i
 3. **Reinstall the AI Assistant** — Go to [Apps](/settings/apps), find AI Assistant, and click **Force Reinstall**
 
 N.O.M.A.D. will detect the GPU during installation and configure the AI to use it automatically. You'll see "NVIDIA container runtime detected" in the installation progress.
+
+**Apple Silicon (macOS):**
+
+Docker Desktop on macOS cannot pass through Metal/MPS GPU access to containers. The Docker-based AI Assistant will run on CPU only. For GPU-accelerated AI on Apple Silicon Macs, install [Ollama natively](https://ollama.com/download/mac) — it can use Metal for significantly faster inference.
 
 **Tip:** Run a [System Benchmark](/settings/benchmark) before and after to see the difference. GPU-accelerated systems typically see 100+ tokens per second vs 10-15 on CPU only.
 
@@ -237,20 +244,32 @@ The system is designed to recover gracefully. If an update fails:
 
 ### Command-Line Maintenance
 
-For advanced troubleshooting or when you can't access the web interface, N.O.M.A.D. includes helper scripts in `/opt/project-nomad`:
+For advanced troubleshooting or when you can't access the web interface, N.O.M.A.D. includes helper scripts in `~/project-nomad` (macOS) or `/opt/project-nomad` (Linux):
 
 **Start all services:**
 ```bash
+# macOS
+bash ~/project-nomad/start_nomad.sh
+
+# Linux
 sudo bash /opt/project-nomad/start_nomad.sh
 ```
 
 **Stop all services:**
 ```bash
+# macOS
+bash ~/project-nomad/stop_nomad.sh
+
+# Linux
 sudo bash /opt/project-nomad/stop_nomad.sh
 ```
 
 **Update Command Center:**
 ```bash
+# macOS
+bash ~/project-nomad/update_nomad.sh
+
+# Linux
 sudo bash /opt/project-nomad/update_nomad.sh
 ```
 *Note: This updates the Command Center only, not individual apps. Update apps through the web interface.*

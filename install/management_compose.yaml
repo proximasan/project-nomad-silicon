@@ -1,4 +1,4 @@
-# Project N.O.M.A.D. management services Docker Compose configuration
+# Project N.O.M.A.D. management services Docker Compose configuration (macOS / Apple Silicon)
 #
 # This compose file defines the admin server, database, and other supporting services required to run Project N.O.M.A.D.
 # You can use this with `docker-compose up -d` to start all the necessary services with a single command after installation.
@@ -6,20 +6,21 @@
 # Note: we recommend leaving all of the environment variables as-is except for any "replaceme" values,
 # which must be updated for the admin server to start successfully. The default values are optimized for ease of installation and use,
 # but you can customize them as needed (e.g. changing ports, database connection details, log level, etc.)
+#
+# Path handling: All occurrences of NOMAD_STORAGE_PATH_PLACEHOLDER are replaced by the install script
+# with the actual installation directory (e.g. $HOME/project-nomad on macOS).
 name: project-nomad
 services:
   admin:
-    image: ghcr.io/crosstalk-solutions/project-nomad:latest
+    image: ghcr.io/proximasan/project-nomad:latest
     pull_policy: always
     container_name: nomad_admin
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # Enables host.docker.internal on Linux
     ports:
       - "8080:8080"
     volumes:
-      - /opt/project-nomad/storage:/app/storage # If you change the default storage path (/opt/project-nomad/storage), make sure to update the disk-collector config as well!
-      - /var/run/docker.sock:/var/run/docker.sock # Allows the admin service to communicate with the Host's Docker daemon
+      - NOMAD_STORAGE_PATH_PLACEHOLDER/storage:/app/storage # If you change the default storage path, make sure to update the disk-collector config as well!
+      - /var/run/docker.sock:/var/run/docker.sock # Allows the admin service to communicate with the Host's Docker daemon (Docker Desktop creates this symlink on macOS)
       - nomad-update-shared:/app/update-shared # Shared volume for update communication
     environment:
       - NODE_ENV=production
@@ -44,6 +45,12 @@ services:
       - REDIS_HOST=redis
       # If you change the Redis port, make sure to update this accordingly
       - REDIS_PORT=6379
+      # NOMAD_STORAGE_PATH tells the admin app where storage lives on the host.
+      # The install script replaces NOMAD_STORAGE_PATH_PLACEHOLDER with the real host path.
+      - NOMAD_STORAGE_PATH=NOMAD_STORAGE_PATH_PLACEHOLDER/storage
+      # APPLE_CHIP_MODEL and OLLAMA_HOST are injected by the install script when applicable.
+      # APPLE_CHIP_MODEL provides CPU info since systeminformation returns empty data inside Docker on macOS.
+      # OLLAMA_HOST is set to http://host.docker.internal:11434 when native Ollama is chosen for Metal GPU acceleration.
     depends_on:
       mysql:
         condition: service_healthy
@@ -77,7 +84,7 @@ services:
       # Needs to match DB_PASSWORD in the admin service!
       - MYSQL_PASSWORD=replaceme
     volumes:
-      - /opt/project-nomad/mysql:/var/lib/mysql # Persist MySQL data on the host. This path can be changed if needed, just make sure it's writable by the container. Host persistence is important for the database to ensure your data isn't lost when the container is removed or updated.
+      - NOMAD_STORAGE_PATH_PLACEHOLDER/mysql:/var/lib/mysql # Persist MySQL data on the host. This path can be changed if needed, just make sure it's writable by the container. Host persistence is important for the database to ensure your data isn't lost when the container is removed or updated.
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 30s
@@ -88,7 +95,7 @@ services:
     container_name: nomad_redis
     restart: unless-stopped
     volumes:
-      - /opt/project-nomad/redis:/data # Persist Redis data on the host. This path can be changed if needed, just make sure it's writable by the container. Host persistence is important for Redis to ensure your data isn't lost when the container is removed or updated.
+      - NOMAD_STORAGE_PATH_PLACEHOLDER/redis:/data # Persist Redis data on the host. This path can be changed if needed, just make sure it's writable by the container. Host persistence is important for Redis to ensure your data isn't lost when the container is removed or updated.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -96,24 +103,29 @@ services:
       retries: 3
   updater:
     # Updater is a lightweight sidecar container that allows the admin container to be updated from within it's own UI
-    image: ghcr.io/crosstalk-solutions/project-nomad-sidecar-updater:latest
+    image: ghcr.io/proximasan/project-nomad-sidecar-updater:latest
     pull_policy: always
     container_name: nomad_updater
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Allows communication with the Host's Docker daemon
-      - /opt/project-nomad:/opt/project-nomad # Writable access required so the updater can set the correct image tag in compose.yml. This needs to be the same location that the compose file is located at on the host for the updater to work correctly
+      - NOMAD_STORAGE_PATH_PLACEHOLDER:NOMAD_STORAGE_PATH_PLACEHOLDER # Writable access required so the updater can set the correct image tag in compose.yml. This needs to be the same location that the compose file is located at on the host for the updater to work correctly
       - nomad-update-shared:/shared # Shared volume for communication with admin container
+    environment:
+      # COMPOSE_FILE tells the updater where the compose file lives inside the container.
+      # The install script replaces NOMAD_STORAGE_PATH_PLACEHOLDER with the real host path.
+      - NOMAD_COMPOSE_FILE=NOMAD_STORAGE_PATH_PLACEHOLDER/compose.yml
   disk-collector:
-    # Disk Collector is a lightweight privileged container that collects disk usage information from the host system and shares it with the admin container so it can be displayed in the UI. 
-    # It requires read-only access to the host filesystem and is designed to be as secure and limited in scope as possible while still providing the necessary functionality.
-    image: ghcr.io/crosstalk-solutions/project-nomad-disk-collector:latest
+    # Disk Collector is a lightweight container that collects disk usage information and shares it with
+    # the admin container so it can be displayed in the UI.
+    # On macOS (Docker Desktop), we cannot mount the entire host filesystem. Instead we mount just
+    # the storage directory and report usage for that volume.
+    image: ghcr.io/proximasan/project-nomad-disk-collector:latest
     pull_policy: always
     container_name: nomad_disk_collector
     restart: unless-stopped
     volumes:
-      - /:/host:ro,rslave  # Read-only view of host FS with rslave propagation so /sys and /proc submounts are visible
-      - /opt/project-nomad/storage:/storage
+      - NOMAD_STORAGE_PATH_PLACEHOLDER/storage:/storage
 
 volumes:
   nomad-update-shared:

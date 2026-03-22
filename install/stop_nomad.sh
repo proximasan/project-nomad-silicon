@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+# Project N.O.M.A.D. Stop Script (macOS)
 
 echo "Finding running Docker containers for Project N.O.M.A.D..."
 
@@ -16,9 +18,9 @@ echo ""
 for container in $containers; do
     echo "Gracefully stopping container: $container"
     if docker stop "$container"; then
-        echo "✓ Successfully stopped $container"
+        echo "Successfully stopped $container"
     else
-        echo "✗ Failed to stop $container"
+        echo "Failed to stop $container"
     fi
     echo ""
 done
