@@ -619,6 +619,20 @@ export class SystemService {
             service.installed = true
             service.installation_status = 'idle'
             await service.save()
+
+            // When native Ollama is auto-detected, ensure its dependency (Qdrant) is also installed
+            if (service.service_name === SERVICE_NAMES.OLLAMA && service.depends_on) {
+              const dependency = allServices.find((s) => s.service_name === service.depends_on)
+              if (dependency && !dependency.installed) {
+                logger.info(`[SystemService] Native Ollama detected — auto-installing dependency: ${dependency.service_name}`)
+                try {
+                  const depConfig = dependency.container_config ? JSON.parse(dependency.container_config) : {}
+                  await this.dockerService._createContainer(dependency, depConfig)
+                } catch (depError) {
+                  logger.error(`[SystemService] Failed to auto-install dependency ${dependency.service_name}:`, depError)
+                }
+              }
+            }
           }
         }
       }
