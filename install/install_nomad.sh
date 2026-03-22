@@ -138,8 +138,9 @@ generateRandomPass() {
   local length="${1:-32}"  # Default to 32
   local password
 
-  # Generate random password using /dev/urandom (works on macOS)
-  password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length")
+  # Generate random password using /dev/urandom
+  # LC_ALL=C is required on macOS — tr fails on non-UTF-8 bytes without it
+  password=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length")
 
   echo "$password"
 }
